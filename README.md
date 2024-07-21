@@ -46,44 +46,76 @@ BEGIN
 END $$;
 
 select * from logs.etl_log
+select * from dm.dm_account_turnover_f
 
 
-/*Процедура расчета витрины остатков*/
+--
 CREATE OR REPLACE PROCEDURE ds.fill_account_balance_f(i_OnDate DATE)
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    /*удаление записи за дату расчета*/
+    -- Удаляем записи за дату расчета
     DELETE FROM DM.DM_ACCOUNT_BALANCE_F WHERE on_date = i_OnDate;
 
-    /*вставка новой записи*/
-    INSERT INTO DM.DM_ACCOUNT_BALANCE_F (on_date,account_rk, balance_out, balance_out_rub)
+    -- Вставляем новые записи с использованием JOIN
+    INSERT INTO DM.DM_ACCOUNT_BALANCE_F (on_date, account_rk, balance_out, balance_out_rub)
     SELECT 
         i_OnDate,
-        account_rk,
+        a.account_rk,
         CASE 
-            WHEN char_type = 'А' THEN COALESCE((SELECT balance_out FROM DM.DM_ACCOUNT_BALANCE_F WHERE on_date = i_OnDate - INTERVAL '1 day' AND account_rk = a.account_rk), 0) 
-                + COALESCE((SELECT SUM(debet_amount) FROM DM.DM_ACCOUNT_TURNOVER_F WHERE on_date = i_OnDate AND account_rk = a.account_rk), 0)
-                - COALESCE((SELECT SUM(credit_amount) FROM DM.DM_ACCOUNT_TURNOVER_F WHERE on_date = i_OnDate AND account_rk = a.account_rk), 0)
-            WHEN char_type = 'П' THEN COALESCE((SELECT balance_out FROM DM.DM_ACCOUNT_BALANCE_F WHERE on_date = i_OnDate - INTERVAL '1 day' AND account_rk = a.account_rk), 0) 
-                - COALESCE((SELECT SUM(debet_amount) FROM DM.DM_ACCOUNT_TURNOVER_F WHERE on_date = i_OnDate AND account_rk = a.account_rk), 0)
-                + COALESCE((SELECT SUM(credit_amount) FROM DM.DM_ACCOUNT_TURNOVER_F WHERE on_date = i_OnDate AND account_rk = a.account_rk), 0)
+            WHEN a.char_type = 'А' THEN COALESCE(p.balance_out, 0) + COALESCE(turnover.debet, 0) - COALESCE(turnover.credit, 0)
+            WHEN a.char_type = 'П' THEN COALESCE(p.balance_out, 0) - COALESCE(turnover.debet, 0) + COALESCE(turnover.credit, 0)
         END AS balance_out,
         CASE 
-            WHEN char_type = 'А' THEN COALESCE((SELECT balance_out_rub FROM DM.DM_ACCOUNT_BALANCE_F WHERE on_date = i_OnDate - INTERVAL '1 day' AND account_rk = a.account_rk), 0) 
-                + COALESCE((SELECT SUM(debet_amount_rub) FROM DM.DM_ACCOUNT_TURNOVER_F WHERE on_date = i_OnDate AND account_rk = a.account_rk), 0)
-                - COALESCE((SELECT SUM(credit_amount_rub) FROM DM.DM_ACCOUNT_TURNOVER_F WHERE on_date = i_OnDate AND account_rk = a.account_rk), 0)
-            WHEN char_type = 'П' THEN COALESCE((SELECT balance_out_rub FROM DM.DM_ACCOUNT_BALANCE_F WHERE on_date = i_OnDate - INTERVAL '1 day' AND account_rk = a.account_rk), 0) 
-                - COALESCE((SELECT SUM(debet_amount_rub) FROM DM.DM_ACCOUNT_TURNOVER_F WHERE on_date = i_OnDate AND account_rk = a.account_rk), 0)
-                + COALESCE((SELECT SUM(credit_amount_rub) FROM DM.DM_ACCOUNT_TURNOVER_F WHERE on_date = i_OnDate AND account_rk = a.account_rk), 0)
+            WHEN a.char_type = 'А' THEN COALESCE(p.balance_out_rub, 0) + COALESCE(turnover_rub.debet, 0) - COALESCE(turnover_rub.credit, 0)
+            WHEN a.char_type = 'П' THEN COALESCE(p.balance_out_rub, 0) - COALESCE(turnover_rub.debet, 0) + COALESCE(turnover_rub.credit, 0)
         END AS balance_out_rub
     FROM 
         DS.MD_ACCOUNT_D a
-	WHERE 
-        i_OnDate >= a.data_actual_date 
-        AND (a.data_actual_end_date IS NULL OR i_OnDate <= a.data_actual_end_date);
+    LEFT JOIN (
+        SELECT 
+            account_rk,
+            balance_out,
+            balance_out_rub
+        FROM 
+            DM.DM_ACCOUNT_BALANCE_F 
+        WHERE 
+            on_date = i_OnDate - INTERVAL '1 day'
+    ) p ON a.account_rk = p.account_rk
+    LEFT JOIN (
+        SELECT 
+            account_rk,
+            SUM(debet_amount) AS debet,
+            SUM(credit_amount) AS credit
+        FROM 
+            DM.DM_ACCOUNT_TURNOVER_F
+        WHERE 
+            on_date = i_OnDate
+        GROUP BY 
+            account_rk
+    ) turnover ON a.account_rk = turnover.account_rk
+    LEFT JOIN (
+        SELECT 
+            account_rk,
+            SUM(debet_amount_rub) AS debet,
+            SUM(credit_amount_rub) AS credit
+        FROM 
+            DM.DM_ACCOUNT_TURNOVER_F
+        WHERE 
+            on_date = i_OnDate
+        GROUP BY 
+            account_rk
+    ) turnover_rub ON a.account_rk = turnover_rub.account_rk
+    WHERE i_OnDate >= a.data_actual_date 
+		AND (a.data_actual_end_date IS NULL OR i_OnDate <= a.data_actual_end_date);
+	EXCEPTION
+		WHEN OTHERS THEN 
+			INSERT INTO logs.etl_log (status, message, start_time, end_time)
+			VALUES ('ERROR', 'Error occurred while processing DM_ACCOUNT_BALANCE_F for ' || i_OnDate || ': ' || SQLERRM, NOW(), NOW());
+END;
 END;
 $$;
+--
 
 /*Расчет за январь*/
 DO $$
@@ -106,6 +138,7 @@ END $$;
 
 select * from logs.etl_log
 SELECT * FROM  DM.DM_ACCOUNT_BALANCE_F
+	ORDER BY balance_out_rub
 
 /* Процедура заполнения 101 формы*/
 CREATE OR REPLACE PROCEDURE dm.fill_f101_round_f(i_OnDate DATE)
@@ -172,3 +205,6 @@ BEGIN
 	INSERT INTO logs.etl_log (status, message, start_time, end_time)
     VALUES ('SUCCESS', 'Calculated DM_F101_ROUND_F', start_time, end_time);
 END $$;
+
+select * from logs.etl_log
+select * from dm.dm_f101_round_f
