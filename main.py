@@ -5,6 +5,7 @@ import time
 from psycopg2 import OperationalError
 from settings import DBNAME, DBUSER, DBPASS, DBHOST, DBPORT
 
+#функция подключения к бд
 def create_connection(dbname, dbuser, dbpass, dbhost, dbport):
     conn = None
     try:
@@ -14,6 +15,7 @@ def create_connection(dbname, dbuser, dbpass, dbhost, dbport):
         print(f'Ошибка подключения: {e}')
     return conn
 
+#функция добавления в логи
 def insert_log_etl(connection, status, message):
     if connection is not None:
         cursor = connection.cursor()
@@ -27,6 +29,7 @@ def insert_log_etl(connection, status, message):
     else:
         print('Нет подключения к БД')
 
+# функция апдейта лога
 def update_log_etl(connection, log_id, status, message):
     if connection is not None:
         cursor = connection.cursor()
@@ -38,12 +41,16 @@ def update_log_etl(connection, log_id, status, message):
     else:
         print('Нет подключения к БД')
 
+
+#функция загрузки данных бд
 def load_csv_to_db(connection,file_path, table_name, conflict_columns):
     log_id, start_time = insert_log_etl(connection,'STARTED', f'Loading {file_path} into {table_name}')
     try:
         df = pd.read_csv(file_path, sep=';', header=0,encoding="cp65001", parse_dates=True,dtype=str)
-        df = df.where(pd.notnull(df), None)
+        df = df.where(pd.notnull(df), None)#NaN -> None
         cursor = connection.cursor()
+        if not conflict_columns:
+            cursor.execute(f'TRUNCATE {table_name} RESTART IDENTITY')
         for i, row in df.iterrows():
             columns = ', '.join(row.index).replace(';',',')
             values = ', '.join(['%s'] * len(row))
@@ -65,7 +72,7 @@ def load_csv_to_db(connection,file_path, table_name, conflict_columns):
         connection.rollback()
         update_log_etl(connection,log_id, 'FAILED', str(e))
 
-
+# функция выгрузки данных с бд
 def unload_db_to_csv(connection):
     log_id, start_time = insert_log_etl(connection, 'STARTED', f'UnLoading dm.dm_f101_round_f')
     try:
@@ -75,7 +82,7 @@ def unload_db_to_csv(connection):
         data = pd.DataFrame(rows)
         col_name = pd.read_sql("SELECT column_name FROM information_schema.columns where table_schema='dm' and table_name='dm_f101_round_f'",con=connection)
         data.columns = col_name['column_name'].values
-        data = data.where(pd.notnull(data), None)
+        data = data.where(pd.notnull(data), None)#NaN -> None
         data.to_csv('CSVLOAD/md_f101_round_f.csv',index=False,sep=';',encoding='UTF-8')
         update_log_etl(connection, log_id, 'SUCCESS', f'Successfully unloaded dm.dm_f101_round_f')
         print('Файл успешно выгружен')
@@ -86,13 +93,14 @@ def unload_db_to_csv(connection):
 
 #1.1
 connection = create_connection(DBNAME, DBUSER, DBPASS, DBHOST, DBPORT)
-load_csv_to_db(connection, 'CSVLOAD/ft_balance_f.csv', 'ds.ft_balance_f','on_date, account_rk')
-load_csv_to_db(connection, 'CSVLOAD/ft_posting_f.csv', 'ds.ft_posting_f','')
-load_csv_to_db(connection, 'CSVLOAD/md_account_d.csv', 'ds.md_account_d','data_actual_date,account_rk')
-load_csv_to_db(connection, 'CSVLOAD/md_currency_d.csv', 'ds.md_currency_d','currency_rk,data_actual_date')
-load_csv_to_db(connection, 'CSVLOAD/md_exchange_rate_d.csv', 'ds.md_exchange_rate_d','data_actual_date,currency_rk')
-load_csv_to_db(connection, 'CSVLOAD/md_ledger_account_s.csv', 'ds.md_ledger_account_s','ledger_account,start_date')
+#load_csv_to_db(connection, 'CSVLOAD/ft_balance_f.csv', 'ds.ft_balance_f','on_date, account_rk')
+#load_csv_to_db(connection, 'CSVLOAD/ft_posting_f.csv', 'ds.ft_posting_f','')
+#load_csv_to_db(connection, 'CSVLOAD/md_account_d.csv', 'ds.md_account_d','data_actual_date,account_rk')
+#load_csv_to_db(connection, 'CSVLOAD/md_currency_d.csv', 'ds.md_currency_d','currency_rk,data_actual_date')
+#load_csv_to_db(connection, 'CSVLOAD/md_exchange_rate_d.csv', 'ds.md_exchange_rate_d','data_actual_date,currency_rk')
+#load_csv_to_db(connection, 'CSVLOAD/md_ledger_account_s.csv', 'ds.md_ledger_account_s','ledger_account,start_date')
+#connection.close()
 
 #1.4
 #unload_db_to_csv(connection)
-#load_csv_to_db(connection, 'CSVLOAD/md_f101_round_f.csv', 'dm.dm_f101_round_f_v2','')
+load_csv_to_db(connection, 'CSVLOAD/md_f101_round_f.csv', 'dm.dm_f101_round_f_v2','')
