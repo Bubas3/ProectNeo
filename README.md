@@ -1,3 +1,5 @@
+сслылка на видео: идут по порядку от 1.1 до 1.4 https://disk.yandex.ru/d/lqki5BV3n-3Elw
+
 /*Процедура расчета витрины оборотов*/
 CREATE OR REPLACE PROCEDURE ds.fill_account_turnover_f(i_OnDate DATE)
 LANGUAGE plpgsql
